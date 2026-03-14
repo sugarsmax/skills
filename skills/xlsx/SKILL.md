@@ -94,6 +94,69 @@ df.describe()  # Statistics
 df.to_excel('output.xlsx', index=False)
 ```
 
+## Date/Time Column Handling (REQUIRED when importing data)
+
+When importing any dataset, scan all columns for date/time values stored as EPOCH timestamps or ISO 8601 strings. Convert them to proper Excel datetime values so Excel recognizes them as dates (enabling date formatting, sorting, and filtering by date).
+
+### Detecting date columns
+```python
+import re
+
+ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2})?")
+
+def looks_like_epoch(series):
+    # Unix epoch in seconds (10 digits) or milliseconds (13 digits)
+    return pd.to_numeric(series, errors="coerce").dropna().apply(
+        lambda v: 1e9 < v < 2e10 or 1e12 < v < 2e13
+    ).all()
+
+def looks_like_iso(series):
+    sample = series.dropna().astype(str).head(10)
+    return sample.apply(lambda v: bool(ISO_PATTERN.match(v))).all()
+```
+
+### Converting to Python datetime before writing
+```python
+from datetime import datetime, timezone
+
+# EPOCH seconds → datetime
+df["created_at"] = pd.to_datetime(df["created_at"], unit="s", utc=True).dt.tz_localize(None)
+
+# EPOCH milliseconds → datetime
+df["updated_at"] = pd.to_datetime(df["updated_at"], unit="ms", utc=True).dt.tz_localize(None)
+
+# ISO 8601 string → datetime
+df["event_date"] = pd.to_datetime(df["event_date"], utc=True).dt.tz_localize(None)
+```
+
+> **Why `tz_localize(None)`?** openpyxl does not support timezone-aware datetimes. Strip the tzinfo after converting to UTC so Excel receives a naive datetime it can format correctly.
+
+### Applying Excel date format with openpyxl
+```python
+from openpyxl.styles import NamedStyle
+
+date_style = NamedStyle(name="date_fmt", number_format="YYYY-MM-DD")
+datetime_style = NamedStyle(name="datetime_fmt", number_format="YYYY-MM-DD HH:MM:SS")
+
+for row in ws.iter_rows(min_row=2, min_col=col_idx, max_col=col_idx):
+    for cell in row:
+        if isinstance(cell.value, datetime):
+            cell.style = date_style  # or datetime_style if time component matters
+```
+
+### Pandas shortcut (date-only columns, no formatting needed)
+```python
+df.to_excel("output.xlsx", index=False)
+# Then open with openpyxl to apply number_format to the date columns
+```
+
+### Rule of thumb
+| Source format | Conversion call | Excel number_format |
+|---|---|---|
+| EPOCH seconds (int/float) | `pd.to_datetime(col, unit="s", utc=True).dt.tz_localize(None)` | `YYYY-MM-DD` |
+| EPOCH milliseconds | `pd.to_datetime(col, unit="ms", utc=True).dt.tz_localize(None)` | `YYYY-MM-DD HH:MM:SS` |
+| ISO 8601 string | `pd.to_datetime(col, utc=True).dt.tz_localize(None)` | `YYYY-MM-DD` or `YYYY-MM-DD HH:MM:SS` |
+
 ## Excel File Workflows
 
 ## CRITICAL: Use Formulas, Not Hardcoded Values
@@ -261,6 +324,24 @@ The script returns JSON with error details:
   }
 }
 ```
+
+## Required Sheet Setup (apply to EVERY sheet with tabular data)
+
+After writing data and formatting, always apply these two settings to every sheet:
+
+### 1. Auto-Filter (Date/Filter toolbar)
+Enable Excel's built-in filter dropdowns on the header row so users can sort and filter immediately:
+```python
+ws.auto_filter.ref = ws.dimensions  # covers all used cells
+```
+
+### 2. Freeze Panes at B2
+Freeze row 1 (header) and column A (first column) so they stay visible while scrolling:
+```python
+ws.freeze_panes = "B2"
+```
+
+Apply both of these after all data and formatting is written, before saving.
 
 ## Best Practices
 
